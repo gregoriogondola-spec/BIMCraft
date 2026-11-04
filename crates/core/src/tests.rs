@@ -5747,7 +5747,7 @@ fn a_project_is_saved_in_the_current_format_and_one_of_format_4_up_opens_as_it_i
     // 5 added the scans a project holds and the point clouds that place them; 6 added detailing (lines, regions, groups,
     // repeating details, line and fill styles); 7 its CAD drawings and the imports that place them; 8 text types; 9 graphic line patterns; 10 dimensions to points and linear ones; 11 and 12 the project languages Swedish, Czech and French, and Dutch;
     // 13 floors' and flat roofs' shapes; 14 the categories of family components, which the starter view templates name; 15 a roof's slope for each
-    // edge and a wall's top offset; 16 dimensions in 3D views and the locks Align leaves. Nothing in a file of 4
+    // edge and a wall's top offset; 16 dimensions in 3D views and the locks Align leaves; 17 multi-category schedules and Italian projects. Nothing in a file of 4
     // to 7 that holds no notes changes.
     let mut s = Session::new();
     let empty = serde_json::to_value(&*s.model).unwrap();
@@ -6410,4 +6410,34 @@ fn symbols_draw_in_the_plan_and_ceiling_plan_of_their_level_whatever_height_the_
     // Not on another level's plan.
     let d = crate::render::draw(&s.model, 100001, view);
     assert!(!d.owners.contains(&Some(id)));
+}
+
+#[test]
+fn a_door_or_window_refused_for_a_wall_the_level_does_not_cut_says_so() {
+    let mut s = Session::new();
+    // The project's own "Level 2" at 3000 stands over "First floor", so a wall of it is 250 mm high.
+    run(&mut s, "level", json!({"name": "First floor", "elevation": 2750}));
+    let square = json!([[0, 0], [8000, 0], [8000, 6000], [0, 6000]]);
+    run(&mut s, "wall", json!({"points": square, "closed": true, "level": "First floor"}));
+    let e = s.execute("window", &json!({"at": [2000, 0], "level": "First floor"})).unwrap_err();
+    assert!(e.contains("no wall at [2000, 0] on First floor"), "{e}");
+    assert!(e.contains("wall 100") && e.contains("2750") && e.contains("3000") && e.contains("cuts at 3950"), "{e}");
+    // Where no wall stands at all, it is still just that.
+    let e = s.execute("window", &json!({"at": [4000, 3000], "level": "First floor"})).unwrap_err();
+    assert!(!e.contains("cuts at"), "{e}");
+}
+
+#[test]
+fn an_error_that_repeats_a_huge_value_stays_short() {
+    let mut s = Session::new();
+    house(&mut s);
+    // Isolating a few elements of a big model hides all the rest: more ids than a view's overrides may hold.
+    let ids: Vec<u64> = (100_000..100_000 + 100_001).collect();
+    let e = s.execute("graphics", &json!({"view": "Level 1", "hide_elements": ids})).unwrap_err();
+    assert!(e.len() < 2500, "{} characters", e.len());
+    assert!(e.starts_with("graphics: `hide_elements` is a list of element ids"), "{}", &e[..80.min(e.len())]);
+    assert!(e.contains("more characters"), "it says it was cut");
+    // A short message is left as it is.
+    let e = s.execute("graphics", &json!({"view": "Level 1", "hide_elements": [1]})).unwrap_err();
+    assert!(!e.contains("more characters"), "{e}");
 }

@@ -962,6 +962,13 @@ impl BimApp {
     /// vertical.
     pub(crate) fn snap(&self, m: &Model, level: Id, v: &View, at: (f32, f32), from: &[P2], square: bool) -> Found {
         let reach = Reach { point: SNAP / v.scale, line: f64::from(PICK) / v.scale };
+        let snaps = self.snaps_now();
+        // A camera's mark is a symbol, not a set of snap points: anywhere on it lands on its eye.
+        if snaps.endpoint
+            && let Some((id, eye)) = render::camera_at(m, level, v, at)
+        {
+            return Found { at: eye, kind: Kind::Endpoint, guide: None, source: Some(id) };
+        }
         let view = self.plan_key().unwrap_or(level);
         let found = match &self.sketch {
             Some(sk) => {
@@ -969,9 +976,9 @@ impl BimApp {
                     crate::sketch::Of::Edit(id) => Some(id),
                     _ => None,
                 };
-                snap::in_sketch(m, snap::Sketch { view, lines: &sk.lines, editing }, v.mm(at), reach, from, square, &self.snaps_now())
+                snap::in_sketch(m, snap::Sketch { view, lines: &sk.lines, editing }, v.mm(at), reach, from, square, &snaps)
             }
-            None => snap::snap(m, view, v.mm(at), reach, from, square, &self.snaps_now()),
+            None => snap::snap(m, view, v.mm(at), reach, from, square, &snaps),
         };
         if matches!(found.kind, Kind::Free | Kind::Angle)
             && !square
@@ -1169,6 +1176,10 @@ impl BimApp {
             Kind::Tangent => {
                 p.circle_stroke(at + vec2(0.0, 5.0), 5.0, stroke);
                 p.line_segment([at + vec2(-8.0, 0.0), at + vec2(8.0, 0.0)], stroke);
+            }
+            Kind::Anchor => {
+                p.circle_stroke(at, 6.0, stroke);
+                p.circle_filled(at, 2.0, pal().accent);
             }
             Kind::Angle => {
                 p.circle_filled(at, 3.0, pal().accent);
@@ -3405,7 +3416,9 @@ impl BimApp {
                 return;
             }
             &Tool::Rotate { centre, start, place } => {
-                let c = if place { cursor } else { sc.screen(centre) };
+                // Placing the centre, the cross sits where a click would put it, with its snap's marker.
+                let at = if place { self.found(sc, q, &[], false) } else { centre };
+                let c = sc.screen(at);
                 p.circle_stroke(c, 5.0, stroke);
                 p.line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], thin);
                 p.line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], thin);

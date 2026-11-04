@@ -988,6 +988,8 @@ pub static ALL: &[Command] = &[
          void?}], symbols?: [{line?: [[x, y], …] | arc?: {centre: [x, y], radius, from?, to} | text?: {at: [x, y], height, value, align?: left|center|right} | dot?: {centre: [x, y], radius}, visible?}], form?: {id | guid, …a \
          form's fields}, symbol?: {id | guid, …a symbol's fields}, delete_form?: [id | guid, …], delete_symbol?: [id | guid, …], \
          operation?: swing|double-swing|sliding|double-sliding|folding|fixed (a door's or window's, for IFC and schedules), \
+         kind?: which fixture or fitting it is, for IFC's predefined type (plumbing: wc|lav|sink|laundry|shower|bath|bidet|urinal; \
+         drain: floor_drain|floor_waste|roof_drain; pipefitting: bend|tee|cross|transition|coupling; \"\" clears it), \
          connectors?: [{kind: power|switch, system: power-balanced|power-unbalanced|switch, poles?: 1-3, voltage?, load_va?, \
          power_factor?, classification?}], rename?, delete?: true, dry_run?, path?, save?} a family of \
          the project's, BIMCraft's own parametric component: created, changed, read, or loaded from the .json file at `path` (a \
@@ -1905,8 +1907,16 @@ pub static ALL: &[Command] = &[
 
 // ---------- parameters ----------
 
+/// The longest an error message is, in characters: a message that repeats what it was given (a list of a hundred thousand ids)
+/// is cut, and says by how much.
+const MAX_MESSAGE: usize = 2000;
+
 fn bad(cmd: &str, msg: impl std::fmt::Display) -> String {
-    format!("{cmd}: {msg}")
+    let text = format!("{cmd}: {msg}");
+    match text.char_indices().nth(MAX_MESSAGE) {
+        Some((cut, _)) => format!("{}… ({} more characters)", &text[..cut], text[cut..].chars().count()),
+        None => text,
+    }
 }
 
 fn absent(v: Option<&Value>) -> bool {
@@ -2150,6 +2160,19 @@ fn along(w: &Wall, p: P2) -> f64 {
 /// How far `p` is from a wall's centre line.
 fn off_centre(m: &Model, w: &Wall, p: P2) -> f64 {
     Axis::of(w).distance(p, walls::centre(m, w))
+}
+
+/// The nearest wall at `at` on any level, with the heights it spans: what a level that does not cut it should be told about.
+fn wall_elsewhere(m: &Model, at: P2) -> Option<(Id, f64, f64)> {
+    m.elements
+        .iter()
+        .filter_map(|(id, e)| match e {
+            Element::Wall(w) => Some((id, w, off_centre(m, w, at))),
+            _ => None,
+        })
+        .filter(|(_, w, d)| *d <= m.thickness(w) / 2.0 + 100.0)
+        .min_by(|a, b| a.2.total_cmp(&b.2))
+        .map(|(id, w, _)| (*id, m.base_z(w), m.top_z(w)))
 }
 
 /// The wall a plan of `level` cuts nearest `at`, within its half thickness plus 100 mm of its centre
@@ -6262,7 +6285,20 @@ fn build_opening(m: &Model, p: &Value, is_door: bool) -> Result<Opening, String>
         None => {
             let at = at.ok_or_else(|| bad(c, "give `at` [x, y] on a wall, or `wall` with `offset`"))?;
             let level = level_param(c, m, p, "level")?;
-            wall_at(m, level, at).ok_or_else(|| bad(c, format!("no wall at [{}, {}] on {}", at.0, at.1, level_name(m, level))))?
+            wall_at(m, level, at).ok_or_else(|| {
+                let none = format!("no wall at [{}, {}] on {}", at.0, at.1, level_name(m, level));
+                match wall_elsewhere(m, at) {
+                    Some((id, bottom, top)) => bad(
+                        c,
+                        format!(
+                            "{none}; wall {id} stands there but spans {bottom} to {top} mm and {} cuts at {} mm: give the wall that level, or a view range that cuts it",
+                            level_name(m, level),
+                            m.plan_range(level).cut
+                        ),
+                    ),
+                    None => bad(c, none),
+                }
+            })?
         }
     };
     let offset = num(c, p, "offset")?.unwrap_or(along_at);
@@ -9119,7 +9155,7 @@ fn family(s: &mut Session, p: &Value) -> R {
         let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let name = p.get("name").filter(|v| !v.is_null()).cloned().or_else(|| fields.remove("name")).unwrap_or(json!(stem));
         // Only the family it holds: what a file says to rename or delete isn't for it to say.
-        let mut family: Map<String, Value> = ["category", "parameters", "types", "forms", "symbols", "operation", "connectors"]
+        let mut family: Map<String, Value> = ["category", "kind", "parameters", "types", "forms", "symbols", "operation", "connectors"]
             .into_iter()
             .filter_map(|k| fields.remove(k).map(|v| (k.to_string(), v)))
             .collect();
@@ -9184,6 +9220,7 @@ fn family(s: &mut Session, p: &Value) -> R {
     // worked out, and what's worth knowing. `dry_run` reads it the same way and says it changed nothing.
     let keys = [
         "category",
+        "kind",
         "parameters",
         "forms",
         "symbols",
@@ -9267,6 +9304,11 @@ fn family(s: &mut Session, p: &Value) -> R {
     }
     if let Some(op) = string(c, &p, "operation")? {
         f.operation = operation(c, &op)?;
+    }
+    // Which fixture or fitting it is; an empty one takes it away. `Family::check` says the kinds its category has.
+    if let Some(kind) = string(c, &p, "kind")? {
+        let kind = kind.trim();
+        f.kind = (!kind.is_empty()).then(|| kind.to_string());
     }
     if let Some(v) = p.get("types").filter(|v| !v.is_null()) {
         let mut types = serde_json::to_value(&f.types).map_err(|e| bad(c, e))?;
